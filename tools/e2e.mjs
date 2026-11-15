@@ -292,7 +292,7 @@ try {
     const pg = await c.newPage();
     pg.on('pageerror', (e) => problemas.push(`${nombre}: error de JavaScript: ${e.message}`));
     pg.on('console', (m) => { if (m.type() === 'error' && !/favicon|Failed to load resource/.test(m.text() + m.location().url)) problemas.push(`${nombre}: consola: ${m.text()}`); });
-    await pg.goto(url); await pg.waitForSelector('#t-jugar', { timeout: 10000 });
+    await pg.goto(url); await pg.waitForSelector('#t-jugar', { timeout: 10000 }); await pg.waitForTimeout(900); // la pantalla de título entra con una animación: se mide ya asentada (si no, el test salía a veces)
     const dentro = (sel) => pg.evaluate((q) => { const e = document.querySelector(q); if (!e) return false; const r = e.getBoundingClientRect(); return r.top >= -1 && r.bottom <= innerHeight + 1 && r.left >= -1 && r.right <= innerWidth + 1; }, sel);
     assert.ok(await dentro('#t-jugar'), `${nombre}: JUGAR debe verse completo sin hacer scroll`);
     assert.ok(await pg.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.getElementById('ventana').scrollWidth <= document.getElementById('ventana').clientWidth + 1), `${nombre}: el título no se desborda a los lados`);
@@ -331,6 +331,120 @@ try {
     await pg.click('#seguir'); await c.close();
   }
   ok('responsive (1024×600 y 812×375 táctil): JUGAR visible, HUD dentro de la ventana, nada tapa al jugador, botones táctiles ≥ 44 px, pausa completa');
+
+  // 9b. TABLET (siempre horizontal): en vertical se pide girar (teléfono y tablet; la compu con mouse no); en horizontal NADA se solapa (ni entre sí ni con el jugador, que va en el centro),
+  //     joystick y botones quedan a ≥ 24 px del borde, todo botón mide ≥ 44 px y el mapa abierto esconde todos los botones salvo ✕ CERRAR MAPA. Cada tamaño × (botones | rueda | cruz) × estados. Capturas 7t-*.png.
+  {
+    const UA_TAB = 'Mozilla/5.0 (Linux; Android 13; SM-X700) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+    { // vertical: aviso de girar en tablet y en teléfono; sin aviso en la compu con mouse
+      for (const [ancho, alto, tactil, nombre] of [[810, 1080, true, 'tablet'], [390, 844, true, 'teléfono'], [810, 1080, false, 'compu']]) {
+        const c = await navegador.newContext({ viewport: { width: ancho, height: alto }, ...(tactil ? { isMobile: true, hasTouch: true, userAgent: UA_TAB } : {}) }); const pg = await c.newPage();
+        await pg.goto(url); await pg.waitForSelector('#t-jugar', { timeout: 10000 }); await pg.waitForTimeout(300);
+        const d = await pg.evaluate(() => getComputedStyle(document.getElementById('girar')).display);
+        assert.equal(d !== 'none', tactil, `${nombre} en vertical: el aviso de girar ${tactil ? 'debe verse' : 'no debe verse'} (display=${d})`); await c.close();
+      }
+    }
+    const MARGEN = 24;
+    const medir = (pg) => pg.evaluate((MARGEN) => {
+      const W = innerWidth, H = innerHeight; const vis = (e) => { const st = getComputedStyle(e); if (st.display === 'none' || st.visibility === 'hidden') return false; const r = e.getBoundingClientRect(); return r.width > 1 && r.height > 1; };
+      const it = []; const add = (n, e, t) => { if (!vis(e)) return; const r = e.getBoundingClientRect(); let tp = r.top, b = r.bottom; const pc = e.closest('.hud-centro'); if (pc && pc !== e && getComputedStyle(pc).overflow === 'hidden') { const q = pc.getBoundingClientRect(); tp = Math.max(tp, q.top); b = Math.min(b, q.bottom); if (b <= tp) return; } it.push({ n: n, t, l: r.left, r: r.right, tp, b }); };
+      document.querySelectorAll('.barra button, .barra .chip, .barra #rev').forEach((e) => add('barra:' + (e.id || e.className.split(' ')[0] || e.tagName), e, 'barra'));
+      document.querySelectorAll('.hud-izq .caja').forEach((e, i) => add('izq' + i, e, 'panel'));
+      document.querySelectorAll('.hud-centro #actividad, .hud-centro #emerg, .hud-centro .avisos li').forEach((e, i) => add('centro:' + (e.id || 'aviso' + i), e, 'panel'));
+      document.querySelectorAll('.hud-der .caja').forEach((e, i) => add('der:' + (e.id || i), e, 'panel'));
+      document.querySelectorAll('.hud-crew .caja').forEach((e) => add('tripulación', e, 'panel')); document.querySelectorAll('.hud-inv .caja').forEach((e) => add('mochila', e, 'panel'));
+      document.querySelectorAll('.hud-teclas button').forEach((e) => add('atajo:' + (e.id || e.textContent.trim()), e, 'boton')); document.querySelectorAll('#tactil button').forEach((e, i) => add('tactil:' + (e.id || e.dataset.d || i), e, 'boton'));
+      const j = document.getElementById('joy'); if (j) add('joystick', j, 'joy');
+      if (!document.body.classList.contains('mapa-on')) { const k = lfr.zoom + 1; it.push({ n: 'minimapa', t: 'panel', l: W - lfr.s.L.W * k - 14, r: W - 6, tp: 56, b: 60 + lfr.s.L.H * k + 4 }); }
+      it.push({ n: 'JUGADOR', t: 'jugador', l: W / 2 - 22, r: W / 2 + 22, tp: H / 2 - 40, b: H / 2 + 14 });
+      const sol = []; for (let i = 0; i < it.length; i++) for (let k = i + 1; k < it.length; k++) { const a = it[i], c = it[k]; if (a.t === 'barra' && c.t === 'barra') continue; if (Math.min(a.r, c.r) - Math.max(a.l, c.l) > 3 && Math.min(a.b, c.b) - Math.max(a.tp, c.tp) > 3) sol.push(`${a.n} × ${c.n}`); }
+      const bordes = it.filter((x) => (x.t === 'boton' || x.t === 'joy') && !x.n.startsWith('barra')).map((x) => ({ n: x.n, m: Math.round(Math.min(x.l, W - x.r, H - x.b)) })).filter((x) => x.m < MARGEN);
+      const chicos = [...document.querySelectorAll('.barra button, #tactil button, .hud-teclas button, #btn-cerrar-mapa')].filter(vis).map((e) => { const r = e.getBoundingClientRect(); return `${e.id || e.textContent.trim().slice(0, 10)} ${Math.round(r.width)}×${Math.round(r.height)}`; }).filter((t) => { const [w, h] = t.split(' ').pop().split('×').map(Number); return w < 43.5 || h < 43.5; });
+      const botonesMapa = document.body.classList.contains('mapa-on') ? [...document.querySelectorAll('button')].filter(vis).map((e) => e.id || e.textContent.trim().slice(0, 12)) : [];
+      return { sol, bordes, chicos, botonesMapa };
+    }, MARGEN);
+    for (const [ancho, alto] of [[960, 600], [1133, 744], [1194, 834]]) for (const modo of ['botones', 'rueda', 'cruz']) {
+      const c = await navegador.newContext({ viewport: { width: ancho, height: alto }, isMobile: true, hasTouch: true, deviceScaleFactor: 1.5, userAgent: UA_TAB });
+      await c.addInitScript((m) => { try { localStorage.setItem('lfr.rueda', m === 'rueda' ? '1' : '0'); localStorage.setItem('lfr.cruz', m === 'cruz' ? '1' : '0'); localStorage.setItem('lfr.joyhint', '1'); } catch { /* nada */ } }, modo);
+      const pg = await c.newPage(); pg.on('pageerror', (e) => problemas.push(`tablet ${ancho}×${alto}: error de JavaScript: ${e.message}`));
+      await pg.goto(url); await pg.waitForSelector('#t-jugar', { timeout: 10000 }); await pg.click('#t-jugar'); await pg.waitForSelector('#ok'); await pg.click('#ok');
+      await pg.waitForFunction(() => window.lfr?.s && document.getElementById('modal').hidden, null, { timeout: 5000 });
+      assert.ok(await pg.evaluate(() => document.body.classList.contains('tablet') && !document.body.classList.contains('telefono')), `${ancho}×${alto}: debe contar como tablet`);
+      await pg.evaluate(() => { while (lfr.s.min < 490) lfr.G.update(lfr.s, 0.05, { dx: 0, dy: 0, crouch: false }); lfr.s.pending = null; lfr.s.grace = 9999; lfr.G.say(lfr.s, 'Primer aviso', 'ok'); lfr.G.say(lfr.s, 'Segundo aviso importante', 'bad'); });
+      const revisa = async (estado) => { await pg.waitForTimeout(450); const r = await pg.evaluate(() => 0); void r; const m = await medir(pg); const et = `tablet ${ancho}×${alto} ${modo} ${estado}`;
+        assert.deepEqual(m.sol, [], `${et}: se solapan ${m.sol}`); assert.deepEqual(m.bordes, [], `${et}: controles a menos de ${MARGEN} px del borde: ${JSON.stringify(m.bordes)}`); assert.deepEqual(m.chicos, [], `${et}: botones menores de 44 px: ${m.chicos}`);
+        return m; };
+      await revisa('base');
+      await pg.keyboard.press('1'); await revisa('panel 1'); await pg.keyboard.press('1');
+      await pg.evaluate(() => { const { s, Sys, G } = lfr; Sys.startEmergency(s, null, 'meteorito'); s.grace = 9999; for (let i = 0; i < 40; i++) G.update(s, 0.05, { dx: 0, dy: 0, crouch: false }); }); await revisa('emergencia');
+      await pg.evaluate(() => { const { s, Sys } = lfr; s.sys.emerg = null; s.pending = null; Object.assign(s.p, { ...((r) => ({ x: r.x + Math.floor(r.w / 2) + 0.5, y: r.y + Math.floor(r.h / 2) + 0.5 }))(s.L.rooms.find((q) => q.id === 'comedor')) }); Sys.startStorm(s); s.grace = 9999; }); await revisa('tormenta');
+      await pg.evaluate(() => { lfr.s.sys.storm = null; });
+      await pg.keyboard.press('Tab'); await pg.waitForTimeout(400); const mm = await revisa('mapa');
+      assert.deepEqual(mm.botonesMapa, ['btn-cerrar-mapa'], `${ancho}×${alto} ${modo}: con el mapa abierto solo debe verse ✕ CERRAR MAPA (se ve: ${mm.botonesMapa})`);
+      const area = await pg.evaluate(() => { const L = lfr.s.L; const cw = innerWidth, ch = innerHeight; const izq = Math.min(300, Math.round(cw * 0.27)); const k = Math.max(3, Math.min(((cw - izq) * 0.96) / L.W, (ch - 62 - 14) / L.H)); return (L.W * k * L.H * k) / (cw * ch); });
+      assert.ok(area > 0.5, `${ancho}×${alto}: el mapa debe ocupar más de la mitad de la pantalla (ocupa ${(area * 100).toFixed(0)} %)`);
+      if (modo === 'botones' && ancho === 1133) await pg.screenshot({ path: join(salida, '7t-tablet-mapa.png') });
+      await pg.click('#btn-cerrar-mapa'); await pg.waitForTimeout(200); assert.ok(await pg.evaluate(() => !document.body.classList.contains('mapa-on')), 'el botón ✕ CERRAR MAPA cierra el mapa');
+      if (modo === 'botones' && ancho === 1133) await pg.screenshot({ path: join(salida, '7t-tablet-juego.png') });
+      await c.close();
+    }
+  }
+  ok('tablet (960×600, 1133×744, 1194×834 × botones | rueda | cruz): vertical pide girar; nada se solapa ni toca al jugador, controles a ≥ 24 px del borde, botones ≥ 44 px, mapa grande con solo ✕ CERRAR MAPA');
+
+  // 9c. TELÉFONO (acostado, con la barra del navegador: alturas reales de 320 a 412 px): NADA se solapa (ni entre sí ni con el jugador), joystick, cruceta y USAR quedan a ≥ 24 px del borde,
+  //     todo botón mide ≥ 44 px y el mapa abierto muestra solo ✕ CERRAR MAPA. Cada tamaño × (joystick | cruceta) × estados. Capturas 7p-*.png.
+  {
+    const UA_TEL = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
+    const MARGEN = 24;
+    const medir = (pg) => pg.evaluate((MARGEN) => {
+      const W = innerWidth, H = innerHeight; const vis = (e) => { const st = getComputedStyle(e); if (st.display === 'none' || st.visibility === 'hidden') return false; const r = e.getBoundingClientRect(); return r.width > 1 && r.height > 1; };
+      const it = []; const add = (n, e, t) => { if (!vis(e)) return; const r = e.getBoundingClientRect(); let tp = r.top, b = r.bottom; const pc = e.closest('.hud-centro, .hud-der'); if (pc && pc !== e && ['hidden', 'auto', 'scroll'].includes(getComputedStyle(pc).overflowY)) { const q = pc.getBoundingClientRect(); tp = Math.max(tp, q.top); b = Math.min(b, q.bottom); if (b <= tp) return; } it.push({ n: n, t, l: r.left, r: r.right, tp, b }); };
+      document.querySelectorAll('.barra button, .barra .chip, .barra #rev').forEach((e) => add('barra:' + (e.id || e.className.split(' ')[0] || e.tagName), e, 'barra'));
+      document.querySelectorAll('.hud-izq').forEach((e, i) => add('izq' + i, e, 'panel'));
+      document.querySelectorAll('.hud-centro #actividad, .hud-centro #emerg, .hud-centro .avisos li').forEach((e, i) => add('centro:' + (e.id || 'aviso' + i), e, 'panel'));
+      document.querySelectorAll('.hud-der .caja').forEach((e, i) => add('der:' + (e.id || i), e, 'panel'));
+      document.querySelectorAll('.hud-crew .caja').forEach((e) => add('tripulación', e, 'panel')); document.querySelectorAll('.hud-inv .caja').forEach((e) => add('mochila', e, 'panel'));
+      document.querySelectorAll('.hud-teclas button').forEach((e) => add('atajo:' + (e.id || e.textContent.trim()), e, 'boton')); document.querySelectorAll('#tactil button').forEach((e, i) => add('tactil:' + (e.id || e.dataset.d || i), e, 'boton'));
+      const j = document.getElementById('joy'); if (j) add('joystick', j, 'joy');
+      if (!document.body.classList.contains('mapa-on')) { const k = (W <= 600 || H <= 520) ? 1.5 : lfr.zoom + 1; it.push({ n: 'minimapa', t: 'panel', l: W - lfr.s.L.W * k - 14, r: W - 6, tp: 4, b: 8 + lfr.s.L.H * k + 4 }); }
+      it.push({ n: 'JUGADOR', t: 'jugador', l: W / 2 - 22, r: W / 2 + 22, tp: H / 2 - 40, b: H / 2 + 14 });
+      const sol = []; for (let i = 0; i < it.length; i++) for (let k = i + 1; k < it.length; k++) { const a = it[i], c = it[k]; if (a.t === 'barra' && c.t === 'barra') continue; if (Math.min(a.r, c.r) - Math.max(a.l, c.l) > 3 && Math.min(a.b, c.b) - Math.max(a.tp, c.tp) > 3) sol.push(`${a.n} × ${c.n}`); }
+      const bordes = it.filter((x) => (x.t === 'boton' || x.t === 'joy') && !x.n.startsWith('barra')).map((x) => ({ n: x.n, m: Math.round(Math.min(x.l, W - x.r, H - x.b)) })).filter((x) => x.m < MARGEN);
+      const chicos = [...document.querySelectorAll('.barra button, #tactil button, .hud-teclas button, #btn-cerrar-mapa')].filter(vis).map((e) => { const r = e.getBoundingClientRect(); return `${e.id || e.textContent.trim().slice(0, 10)} ${Math.round(r.width)}×${Math.round(r.height)}`; }).filter((t) => { const [w, h] = t.split(' ').pop().split('×').map(Number); return w < 43.5 || h < 43.5; });
+      const botonesMapa = document.body.classList.contains('mapa-on') ? [...document.querySelectorAll('button')].filter(vis).map((e) => e.id || e.textContent.trim().slice(0, 12)) : [];
+      return { sol, bordes, chicos, botonesMapa };
+    }, MARGEN);
+    for (const [ancho, alto] of [[568, 320], [640, 360], [750, 338], [844, 342], [932, 350], [915, 412]]) for (const modo of ['rueda', 'cruz']) {
+      const c = await navegador.newContext({ viewport: { width: ancho, height: alto }, isMobile: true, hasTouch: true, deviceScaleFactor: 1.5, userAgent: UA_TEL });
+      await c.addInitScript((m) => { try { localStorage.setItem('lfr.cruz', m === 'cruz' ? '1' : '0'); localStorage.setItem('lfr.joyhint', '1'); } catch { /* nada */ } }, modo);
+      const pg = await c.newPage(); pg.on('pageerror', (e) => problemas.push(`teléfono ${ancho}×${alto}: error de JavaScript: ${e.message}`));
+      await pg.goto(url); await pg.waitForSelector('#t-jugar', { timeout: 10000 }); await pg.waitForTimeout(900);
+      if (ancho === 568) { // título: las tres misiones se ven y JUGAR no las tapa
+        const t = await pg.evaluate(() => { const j = document.getElementById('t-jugar').getBoundingClientRect(); const ts = [...document.querySelectorAll('.tarjeta')].map((e) => e.getBoundingClientRect()); return { jt: j.top, filas: Math.max(...ts.map((r) => r.top)) - Math.min(...ts.map((r) => r.top)) < 8 ? 1 : 2, fondo: Math.max(...ts.map((r) => r.bottom)) }; });
+        assert.equal(t.filas, 1, 'teléfono 568×320: las 3 misiones van en una fila'); assert.ok(t.fondo <= t.jt + 2, `teléfono 568×320: JUGAR (${Math.round(t.jt)}) no debe tapar las misiones (terminan en ${Math.round(t.fondo)})`);
+        await pg.screenshot({ path: join(salida, '7p-telefono-titulo.png') });
+      }
+      await pg.click('#t-jugar'); await pg.waitForSelector('#ok'); await pg.click('#ok');
+      await pg.waitForFunction(() => window.lfr?.s && document.getElementById('modal').hidden, null, { timeout: 5000 });
+      assert.ok(await pg.evaluate(() => document.body.classList.contains('telefono')), `${ancho}×${alto}: debe contar como teléfono`);
+      await pg.evaluate(() => { while (lfr.s.min < 490) lfr.G.update(lfr.s, 0.05, { dx: 0, dy: 0, crouch: false }); lfr.s.pending = null; lfr.s.grace = 9999; lfr.G.say(lfr.s, 'Primer aviso', 'ok'); lfr.G.say(lfr.s, 'Segundo aviso importante', 'bad'); });
+      const revisa = async (estado) => { await pg.waitForTimeout(450); const m = await medir(pg); const et = `teléfono ${ancho}×${alto} ${modo} ${estado}`;
+        assert.deepEqual(m.sol, [], `${et}: se solapan ${m.sol}`); assert.deepEqual(m.bordes, [], `${et}: controles a menos de ${MARGEN} px del borde: ${JSON.stringify(m.bordes)}`); assert.deepEqual(m.chicos, [], `${et}: botones menores de 44 px: ${m.chicos}`);
+        return m; };
+      await revisa('base');
+      for (const k of ['1', '2', '3', '4']) { await pg.keyboard.press(k); await revisa('panel ' + k); await pg.keyboard.press(k); }
+      await pg.evaluate(() => { const { s, Sys, G } = lfr; Sys.startEmergency(s, null, 'meteorito'); s.grace = 9999; for (let i = 0; i < 40; i++) G.update(s, 0.05, { dx: 0, dy: 0, crouch: false }); }); await revisa('emergencia');
+      await pg.evaluate(() => { const { s, Sys } = lfr; s.sys.emerg = null; s.pending = null; Object.assign(s.p, { ...((r) => ({ x: r.x + Math.floor(r.w / 2) + 0.5, y: r.y + Math.floor(r.h / 2) + 0.5 }))(s.L.rooms.find((q) => q.id === 'comedor')) }); Sys.startStorm(s); s.grace = 9999; }); await revisa('tormenta');
+      await pg.evaluate(() => { lfr.s.sys.storm = null; });
+      await pg.keyboard.press('Tab'); await pg.waitForTimeout(400); const mm = await revisa('mapa');
+      assert.deepEqual(mm.botonesMapa, ['btn-cerrar-mapa'], `${ancho}×${alto} ${modo}: con el mapa abierto solo debe verse ✕ CERRAR MAPA (se ve: ${mm.botonesMapa})`);
+      if (modo === 'rueda' && ancho === 750) await pg.screenshot({ path: join(salida, '7p-telefono-mapa.png') });
+      await pg.click('#btn-cerrar-mapa'); await pg.waitForTimeout(200); assert.ok(await pg.evaluate(() => !document.body.classList.contains('mapa-on')), 'el botón ✕ CERRAR MAPA cierra el mapa');
+      if (modo === 'rueda' && ancho === 750) await pg.screenshot({ path: join(salida, '7p-telefono-juego.png') });
+      await c.close();
+    }
+  }
+  ok('teléfono (568×320 … 932×350, 915×412 × joystick | cruceta): nada se solapa ni toca al jugador, controles a ≥ 24 px del borde, botones ≥ 44 px, título con las 3 misiones visibles, mapa con solo ✕ CERRAR MAPA');
 
   // 10. Inglés para el jurado: ?lang=en, selector ES/EN en el título (se guarda), DATOS NASA, intro, mantenimiento, tormenta y final en inglés.
   {
@@ -392,7 +506,7 @@ try {
     await pg.keyboard.press('c'); await pg.waitForSelector('.recetas', { timeout: 3000 }); const fab = await pg.textContent('#ventana'); assert.ok(fab.includes('CRAFT') && fab.includes('MAKE') && !/FABRICAR|HACER/.test(fab), `fabricar en inglés: ${fab.slice(0, 80)}`); await pg.click('#cerrar');
     assert.match(await pg.textContent('.hud-crew'), /happy|asks for/, 'la tripulación del HUD en inglés');
     // tormenta solar: cartel del HUD en inglés
-    await pg.evaluate(() => { const { s, Sys } = lfr; Object.assign(s.p, { x: 5.5, y: 13.5 }); Sys.startStorm(s); s.grace = 9999; });
+    await pg.evaluate(() => { const { s, Sys } = lfr; Object.assign(s.p, { ...((r) => ({ x: r.x + Math.floor(r.w / 2) + 0.5, y: r.y + Math.floor(r.h / 2) + 0.5 }))(s.L.rooms.find((q) => q.id === 'comedor')) }); Sys.startStorm(s); s.grace = 9999; });
     await pg.waitForFunction(() => /SOLAR STORM 1\/3/.test(document.getElementById('emerg')?.textContent ?? ''), null, { timeout: 4000 });
     const hud = await pg.textContent('#emerg'); assert.match(hud, /class X|class M|class C/); assert.match(hud, /Shelter|shelter/); assert.match(hud, /arrive in/);
     await pg.screenshot({ path: join(salida, '8-ingles-tormenta.png') });

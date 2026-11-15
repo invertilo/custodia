@@ -53,7 +53,7 @@ try {
   // clima espacial real: Control ve la tormenta con su llamarada, sabe si el astronauta ya está a salvo y puede avisarle
   const verClima = await control.evaluate(() => document.getElementById('m-clima').textContent);
   assert.match(verClima, /CLIMA ESPACIAL REAL/); assert.match(verClima, /Próxima tormenta: día 2/); assert.match(verClima, /NASA DONKI/); ok('Control ve la próxima llamarada REAL de NASA y cuándo llega');
-  await astro.evaluate(() => { const { s, Sys } = lfr; Object.assign(s.p, { x: 5.5, y: 13.5, inDuct: false, hidden: null }); Sys.startStorm(s); }); // el comedor no es el refugio de la Estación
+  await astro.evaluate(() => { const { s, Sys } = lfr; Object.assign(s.p, { ...((r) => ({ x: r.x + Math.floor(r.w / 2) + 0.5, y: r.y + Math.floor(r.h / 2) + 0.5 }))(s.L.rooms.find((q) => q.id === 'comedor')), inDuct: false, hidden: null }); Sys.startStorm(s); }); // el comedor no es el refugio de la Estación
   await control.waitForFunction(() => /TORMENTA SOLAR 1 de 3/.test(document.getElementById('m-clima')?.textContent ?? ''), null, { timeout: 6000 });
   assert.match(await control.textContent('#m-clima'), /AFUERA/);
   await control.waitForFunction(() => { const b = document.querySelector('#m-clima [data-aviso="refugio"]'); return b && !b.disabled; }, null, { timeout: 9000 });
